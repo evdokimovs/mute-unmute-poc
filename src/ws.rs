@@ -1,9 +1,11 @@
 use std::rc::Rc;
 
-use crate::event_listener::EventListener;
-use futures::SinkExt;
+use futures::{AsyncReadExt, SinkExt};
 use mute_unmute_poc_proto::{Command, Event};
+use wasm_bindgen_futures::spawn_local;
 use web_sys::WebSocket as SysWebSocket;
+
+use crate::{event_listener::EventListener, resolve_after};
 
 pub struct WebSocket {
     socket: Rc<SysWebSocket>,
@@ -37,8 +39,14 @@ impl WebSocket {
     }
 
     pub fn send(&self, cmd: Command) {
-        self.socket
-            .send_with_str(&serde_json::to_string(&cmd).unwrap())
-            .unwrap();
+        let socket_clone = Rc::clone(&self.socket);
+        spawn_local(async move {
+            while socket_clone.ready_state() == 0 {
+                resolve_after(50).await;
+            }
+            socket_clone
+                .send_with_str(&serde_json::to_string(&cmd).unwrap())
+                .unwrap();
+        });
     }
 }

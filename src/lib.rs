@@ -7,12 +7,13 @@ use std::{
     rc::{Rc, Weak},
 };
 
-use crate::ws::WebSocket;
 use futures::{channel::oneshot, Future, TryFutureExt};
 use js_sys::{Function, Promise};
 use mute_unmute_poc_proto::{Command, Event};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{spawn_local, JsFuture};
+
+use crate::ws::WebSocket;
 
 #[derive(Eq, PartialEq, Hash)]
 struct PeerId(pub i32);
@@ -116,7 +117,6 @@ impl RoomHandle {
             .insert(mute_subscriber, resolver);
         let self_clone = self.clone();
         spawn_local(async move {
-            resolve_after(500).await;
             self_clone
                 .0
                 .borrow()
