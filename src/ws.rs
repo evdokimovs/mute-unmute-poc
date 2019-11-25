@@ -41,7 +41,7 @@ impl WebSocket {
         let socket_clone = Rc::clone(&self.socket);
         spawn_local(async move {
             while socket_clone.ready_state() == 0 {
-                resolve_after(50).await;
+                resolve_after(50).await.unwrap();
             }
             socket_clone
                 .send_with_str(&serde_json::to_string(&cmd).unwrap())

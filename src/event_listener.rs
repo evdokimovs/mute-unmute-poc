@@ -42,31 +42,6 @@ where
             closure,
         }
     }
-
-    /// Creates new [`EventListener`] from a given [`FnOnce`] `closure`.
-    pub fn new_once<F>(
-        target: Rc<T>,
-        event_name: &'static str,
-        closure: F,
-    ) -> Self
-    where
-        F: FnOnce(A) + 'static,
-    {
-        let closure: Closure<dyn FnMut(A)> = Closure::once(closure);
-
-        target
-            .add_event_listener_with_callback(
-                event_name,
-                closure.as_ref().unchecked_ref(),
-            )
-            .unwrap();
-
-        Self {
-            event_name,
-            target,
-            closure,
-        }
-    }
 }
 
 impl<T, A> Drop for EventListener<T, A>
@@ -82,7 +57,7 @@ where
                 self.closure.as_ref().unchecked_ref(),
             )
         {
-            web_sys::console::log_1(&err.into());
+            web_sys::console::log_1(&err);
         }
     }
 }

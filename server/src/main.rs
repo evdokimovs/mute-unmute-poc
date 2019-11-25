@@ -1,13 +1,12 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use actix::{Actor, AsyncContext, StreamHandler, WrapFuture};
+use actix::{Actor, AsyncContext, StreamHandler};
 use actix_web::{
     dev::Server,
     web::{resource, Payload},
     App, HttpRequest, HttpResponse, HttpServer,
 };
 use actix_web_actors::ws;
-use futures::Future;
 use mute_unmute_poc_proto::{Command, Event};
 
 fn main() {
@@ -26,21 +25,16 @@ fn run() -> Server {
     .start()
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn ws_index(
     request: HttpRequest,
     payload: Payload,
 ) -> Result<HttpResponse, actix_web::Error> {
     println!("WS connected!");
-    ws::start(WsSession::new(), &request, payload)
+    ws::start(WsSession, &request, payload)
 }
 
-struct WsSession {}
-
-impl WsSession {
-    pub fn new() -> Self {
-        Self {}
-    }
-}
+struct WsSession;
 
 impl Actor for WsSession {
     type Context = ws::WebsocketContext<Self>;
@@ -65,6 +59,9 @@ impl StreamHandler<ws::Message, ws::ProtocolError> for WsSession {
                         });
                     }
                 }
+            }
+            ws::Message::Close(_) => {
+                println!("WebSocket closed.");
             }
             _ => {
                 unimplemented!();

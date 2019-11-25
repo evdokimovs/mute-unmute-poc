@@ -1,17 +1,15 @@
 mod event_listener;
 mod ws;
 
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, future::Future, rc::Rc};
 
-use futures::channel::{mpsc, oneshot};
+use futures::channel::oneshot;
 use js_sys::{Function, Promise};
 use mute_unmute_poc_proto::{Command, Event};
-use std::pin::Pin;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{spawn_local, JsFuture};
 
 use crate::ws::WebSocket;
-use std::future::Future;
 
 #[derive(Eq, PartialEq, Hash)]
 struct PeerId(pub i32);
@@ -22,8 +20,8 @@ struct PromiseResolver {
 }
 
 impl PromiseResolver {
-    pub fn new_promise() -> (PromiseResolver, Promise) {
-        let mut promise_resolver = PromiseResolver {
+    pub fn new_promise() -> (Self, Promise) {
+        let mut promise_resolver = Self {
             resolve: None,
             reject: None,
         };
@@ -37,11 +35,12 @@ impl PromiseResolver {
     }
 
     pub fn resolve(self) {
-        self.resolve.unwrap().call0(&JsValue::NULL);
+        self.resolve.unwrap().call0(&JsValue::NULL).unwrap();
     }
 
+    #[allow(dead_code)]
     pub fn reject(self) {
-        self.reject.unwrap().call0(&JsValue::NULL);
+        self.reject.unwrap().call0(&JsValue::NULL).unwrap();
     }
 }
 
@@ -51,11 +50,11 @@ struct Room {
 }
 
 impl Room {
-    pub fn handle_event(&mut self, event: Event) {
+    pub fn handle_event(&mut self, event: &Event) {
         match event {
             Event::RoomMuted { video, audio } => {
-                self.peers.iter_mut().for_each(|(id, peer)| {
-                    peer.mute(audio, video);
+                self.peers.iter_mut().for_each(|(_, peer)| {
+                    peer.mute(*audio, *video);
                 });
             }
         }
@@ -77,12 +76,6 @@ pub async fn resolve_after(delay_ms: i32) -> Result<(), JsValue> {
     Ok(())
 }
 
-#[derive(Hash, PartialEq, Eq, Debug)]
-struct MuteSubscriber {
-    video: bool,
-    audio: bool,
-}
-
 #[wasm_bindgen]
 #[derive(Clone)]
 pub struct RoomHandle(Rc<RefCell<Room>>);
@@ -98,14 +91,14 @@ impl RoomHandle {
         let room = Rc::new(RefCell::new(Room { peers, ws }));
         let room_clone = room.clone();
         room.borrow_mut().ws.on_message(move |event| {
-            room_clone.borrow_mut().handle_event(event);
+            room_clone.borrow_mut().handle_event(&event);
         });
         Self(room)
     }
 
     pub fn mute(&self, audio: bool, video: bool) -> Promise {
         let (resolver, promise) = PromiseResolver::new_promise();
-        let qq: Vec<_> = self
+        let on_mute_fut: Vec<_> = self
             .0
             .borrow_mut()
             .peers
@@ -114,12 +107,18 @@ impl RoomHandle {
             .collect();
 
         spawn_local(async move {
-            futures::future::join_all(qq).await;
+            futures::future::join_all(on_mute_fut).await;
             resolver.resolve();
         });
 
         self.0.borrow().ws.send(Command::MuteRoom { audio, video });
         promise
+    }
+}
+
+impl Default for RoomHandle {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -137,14 +136,20 @@ impl PeerConnection {
         }
     }
 
+    pub fn filter_tracks_by_kind_mut(
+        &mut self,
+        audio: bool,
+        video: bool,
+    ) -> impl Iterator<Item = &mut Sender> {
+        self.tracks.iter_mut().filter(move |sender| {
+            (sender.kind == SenderKind::Audio && audio)
+                || (sender.kind == SenderKind::Video && video)
+        })
+    }
+
     pub fn mute(&mut self, audio: bool, video: bool) {
-        self.tracks
-            .iter_mut()
-            .filter(|sender| {
-                (&sender.kind == &SenderKind::Audio && audio)
-                    || (&sender.kind == &SenderKind::Video && video)
-            })
-            .for_each(|sender| sender.mute());
+        self.filter_tracks_by_kind_mut(audio, video)
+            .for_each(Sender::mute);
     }
 
     pub fn on_mute(
@@ -153,13 +158,8 @@ impl PeerConnection {
         video: bool,
     ) -> impl Future<Output = Vec<Result<(), oneshot::Canceled>>> {
         futures::future::join_all(
-            self.tracks
-                .iter_mut()
-                .filter(|sender| {
-                    (&sender.kind == &SenderKind::Audio && audio)
-                        || (&sender.kind == &SenderKind::Video && video)
-                })
-                .map(|sender| sender.on_mute()),
+            self.filter_tracks_by_kind_mut(audio, video)
+                .map(Sender::on_mute),
         )
     }
 }
