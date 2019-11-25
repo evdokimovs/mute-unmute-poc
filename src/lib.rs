@@ -1,11 +1,7 @@
 mod event_listener;
 mod ws;
 
-use std::{
-    cell::RefCell,
-    collections::HashMap,
-    rc::{Rc},
-};
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use js_sys::{Function, Promise};
 use mute_unmute_poc_proto::{Command, Event};
@@ -57,14 +53,14 @@ impl Room {
         match event {
             Event::RoomMuted { video, audio } => {
                 let sub = MuteSubscriber { video, audio };
-                self.peers.iter_mut()
-                    .for_each(|(id, peer)| {
-                        peer.mute(video, audio);
-                    });
-                self.on_mute.remove(&sub)
-                    .map(|q| q.into_iter().for_each(|resolver| {
+                self.peers.iter_mut().for_each(|(id, peer)| {
+                    peer.mute(video, audio);
+                });
+                self.on_mute.remove(&sub).map(|q| {
+                    q.into_iter().for_each(|resolver| {
                         resolver.resolve();
-                    }));
+                    })
+                });
             }
         }
     }
