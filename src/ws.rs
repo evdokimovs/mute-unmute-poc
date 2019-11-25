@@ -1,6 +1,5 @@
 use std::rc::Rc;
 
-use futures::{AsyncReadExt, SinkExt};
 use mute_unmute_poc_proto::{Command, Event};
 use wasm_bindgen_futures::spawn_local;
 use web_sys::WebSocket as SysWebSocket;

@@ -4,10 +4,9 @@ mod ws;
 use std::{
     cell::RefCell,
     collections::HashMap,
-    rc::{Rc, Weak},
+    rc::{Rc},
 };
 
-use futures::{channel::oneshot, Future, TryFutureExt};
 use js_sys::{Function, Promise};
 use mute_unmute_poc_proto::{Command, Event};
 use wasm_bindgen::prelude::*;
@@ -58,6 +57,10 @@ impl Room {
         match event {
             Event::RoomMuted { video, audio } => {
                 let sub = MuteSubscriber { video, audio };
+                self.peers.iter_mut()
+                    .for_each(|(id, peer)| {
+                        peer.mute(video, audio);
+                    });
                 self.on_mute.remove(&sub)
                     .map(|q| q.into_iter().for_each(|resolver| {
                         resolver.resolve();
@@ -90,14 +93,14 @@ struct MuteSubscriber {
 
 #[wasm_bindgen]
 #[derive(Clone)]
-struct RoomHandle(Rc<RefCell<Room>>);
+pub struct RoomHandle(Rc<RefCell<Room>>);
 
 #[wasm_bindgen]
 impl RoomHandle {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
         console_error_panic_hook::set_once();
-        let mut ws = WebSocket::new("ws://127.0.0.1:10000/ws");
+        let ws = WebSocket::new("ws://127.0.0.1:10000/ws");
         let room = Rc::new(RefCell::new(Room {
             peers: HashMap::new(),
             on_mute: HashMap::new(),
@@ -136,11 +139,19 @@ struct PeerConnection {
 }
 
 impl PeerConnection {
-    pub fn mute(&mut self, kind: SenderKind) {
-        self.tracks
-            .iter()
-            .filter(|sender| &sender.kind == &kind)
-            .for_each(|sender| sender.mute());
+    pub fn mute(&mut self, audio: bool, video: bool) {
+        if audio {
+            self.tracks
+                .iter()
+                .filter(|sender| &sender.kind == &SenderKind::Audio)
+                .for_each(|sender| sender.mute());
+        }
+        if video {
+            self.tracks
+                .iter()
+                .filter(|sender| &sender.kind == &SenderKind::Video)
+                .for_each(|sender| sender.mute())
+        }
     }
 }
 
