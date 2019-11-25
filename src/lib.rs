@@ -49,7 +49,7 @@ impl PromiseResolver {
 
 struct Room {
     peers: HashMap<PeerId, PeerConnection>,
-    on_mute: HashMap<MuteSubscriber, PromiseResolver>,
+    on_mute: HashMap<MuteSubscriber, Vec<PromiseResolver>>,
     ws: WebSocket,
 }
 
@@ -58,8 +58,10 @@ impl Room {
         match event {
             Event::RoomMuted { video, audio } => {
                 let sub = MuteSubscriber { video, audio };
-                let resolver = self.on_mute.remove(&sub).unwrap();
-                resolver.resolve();
+                self.on_mute.remove(&sub)
+                    .map(|q| q.into_iter().for_each(|resolver| {
+                        resolver.resolve();
+                    }));
             }
         }
     }
@@ -114,7 +116,9 @@ impl RoomHandle {
         self.0
             .borrow_mut()
             .on_mute
-            .insert(mute_subscriber, resolver);
+            .entry(mute_subscriber)
+            .or_insert_with(|| Vec::new())
+            .push(resolver);
         let self_clone = self.clone();
         spawn_local(async move {
             self_clone

@@ -1,4 +1,6 @@
-use actix::{Actor, StreamHandler};
+use std::time::{Duration, Instant};
+
+use actix::{Actor, AsyncContext, StreamHandler, WrapFuture};
 use actix_web::{
     dev::Server,
     web::{resource, Payload},
@@ -7,7 +9,6 @@ use actix_web::{
 use actix_web_actors::ws;
 use futures::Future;
 use mute_unmute_poc_proto::{Command, Event};
-use serde::{Deserialize, Serialize};
 
 fn main() {
     let sys = actix::System::new("control-api-mock");
@@ -53,13 +54,15 @@ impl StreamHandler<ws::Message, ws::ProtocolError> for WsSession {
                 println!("Getted {:?} from client.", msg);
                 match msg {
                     Command::MuteRoom { video, audio } => {
-                        ctx.text(
-                            serde_json::to_string(&Event::RoomMuted {
-                                video,
-                                audio,
-                            })
-                            .unwrap(),
-                        );
+                        ctx.run_later(Duration::from_secs(3), move |_, ctx| {
+                            ctx.text(
+                                serde_json::to_string(&Event::RoomMuted {
+                                    video,
+                                    audio,
+                                })
+                                .unwrap(),
+                            );
+                        });
                     }
                 }
             }
