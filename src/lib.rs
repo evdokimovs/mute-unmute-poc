@@ -1,14 +1,18 @@
+mod event_listener;
+mod ws;
+
 use std::{
     cell::RefCell,
     collections::HashMap,
     rc::{Rc, Weak},
 };
 
+use crate::ws::WebSocket;
 use futures::{channel::oneshot, Future, TryFutureExt};
 use js_sys::{Function, Promise};
+use mute_unmute_poc_proto::{Command, Event};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{spawn_local, JsFuture};
-use mute_unmute_poc_proto::{Event};
 
 #[derive(Eq, PartialEq, Hash)]
 struct PeerId(pub i32);
@@ -45,16 +49,14 @@ impl PromiseResolver {
 struct Room {
     peers: HashMap<PeerId, PeerConnection>,
     on_mute: HashMap<MuteSubscriber, PromiseResolver>,
+    ws: WebSocket,
 }
 
 impl Room {
     pub fn handle_event(&mut self, event: Event) {
         match event {
             Event::RoomMuted { video, audio } => {
-                let sub = MuteSubscriber {
-                    video,
-                    audio,
-                };
+                let sub = MuteSubscriber { video, audio };
                 let resolver = self.on_mute.remove(&sub).unwrap();
                 resolver.resolve();
             }
@@ -84,25 +86,43 @@ struct MuteSubscriber {
 }
 
 #[wasm_bindgen]
+#[derive(Clone)]
 struct RoomHandle(Rc<RefCell<Room>>);
 
 #[wasm_bindgen]
 impl RoomHandle {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
-        Self(Rc::new(RefCell::new(Room {
+        console_error_panic_hook::set_once();
+        let mut ws = WebSocket::new("ws://127.0.0.1:10000/ws");
+        let room = Rc::new(RefCell::new(Room {
             peers: HashMap::new(),
             on_mute: HashMap::new(),
-        })))
+            ws,
+        }));
+        let room_clone = room.clone();
+        room.borrow_mut().ws.on_message(move |event| {
+            room_clone.borrow_mut().handle_event(event);
+        });
+        Self(room)
     }
 
     pub fn mute(&self, audio: bool, video: bool) -> Promise {
         let (resolver, promise) = PromiseResolver::new_promise();
-        let mute_subscriber = MuteSubscriber {
-            audio,
-            video,
-        };
-        self.0.borrow_mut().on_mute.insert(mute_subscriber, resolver);
+        let mute_subscriber = MuteSubscriber { audio, video };
+        self.0
+            .borrow_mut()
+            .on_mute
+            .insert(mute_subscriber, resolver);
+        let self_clone = self.clone();
+        spawn_local(async move {
+            resolve_after(500).await;
+            self_clone
+                .0
+                .borrow()
+                .ws
+                .send(Command::MuteRoom { audio, video });
+        });
         promise
     }
 }
@@ -113,7 +133,8 @@ struct PeerConnection {
 
 impl PeerConnection {
     pub fn mute(&mut self, kind: SenderKind) {
-        self.tracks.iter()
+        self.tracks
+            .iter()
             .filter(|sender| &sender.kind == &kind)
             .for_each(|sender| sender.mute());
     }
@@ -130,7 +151,5 @@ struct Sender {
 }
 
 impl Sender {
-    pub fn mute(&self) {
-
-    }
+    pub fn mute(&self) {}
 }
