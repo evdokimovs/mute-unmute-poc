@@ -8,6 +8,7 @@ use futures::{channel::oneshot, Future, TryFutureExt};
 use js_sys::{Function, Promise};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{spawn_local, JsFuture};
+use mute_unmute_poc_proto::{Event};
 
 #[derive(Eq, PartialEq, Hash)]
 struct PeerId(pub i32);
@@ -43,7 +44,22 @@ impl PromiseResolver {
 
 struct Room {
     peers: HashMap<PeerId, PeerConnection>,
-    on_mute: Vec<PromiseResolver>,
+    on_mute: HashMap<MuteSubscriber, PromiseResolver>,
+}
+
+impl Room {
+    pub fn handle_event(&mut self, event: Event) {
+        match event {
+            Event::RoomMuted { video, audio } => {
+                let sub = MuteSubscriber {
+                    video,
+                    audio,
+                };
+                let resolver = self.on_mute.remove(&sub).unwrap();
+                resolver.resolve();
+            }
+        }
+    }
 }
 
 /// Async function which resolves after provided number of milliseconds.
@@ -61,6 +77,12 @@ pub async fn resolve_after(delay_ms: i32) -> Result<(), JsValue> {
     Ok(())
 }
 
+#[derive(Hash, PartialEq, Eq, Debug)]
+struct MuteSubscriber {
+    video: bool,
+    audio: bool,
+}
+
 #[wasm_bindgen]
 struct RoomHandle(Rc<RefCell<Room>>);
 
@@ -70,30 +92,45 @@ impl RoomHandle {
     pub fn new() -> Self {
         Self(Rc::new(RefCell::new(Room {
             peers: HashMap::new(),
-            on_mute: Vec::new(),
+            on_mute: HashMap::new(),
         })))
     }
 
-    pub fn test(&mut self) -> Promise {
-        let (tx, rx) = PromiseResolver::new_promise();
-        self.0.borrow_mut().on_mute.push(tx);
-
-        let inner_clone = self.0.clone();
-        spawn_local(async move {
-            resolve_after(1000).await;
-            inner_clone.borrow_mut().on_mute.drain(..).for_each(
-                |promise_resolver| {
-                    promise_resolver.resolve();
-                },
-            );
-        });
-
-        rx
+    pub fn mute(&self, audio: bool, video: bool) -> Promise {
+        let (resolver, promise) = PromiseResolver::new_promise();
+        let mute_subscriber = MuteSubscriber {
+            audio,
+            video,
+        };
+        self.0.borrow_mut().on_mute.insert(mute_subscriber, resolver);
+        promise
     }
 }
 
 struct PeerConnection {
-    tracks: Vec<Track>,
+    tracks: Vec<Sender>,
 }
 
-struct Track {}
+impl PeerConnection {
+    pub fn mute(&mut self, kind: SenderKind) {
+        self.tracks.iter()
+            .filter(|sender| &sender.kind == &kind)
+            .for_each(|sender| sender.mute());
+    }
+}
+
+#[derive(Eq, PartialEq)]
+enum SenderKind {
+    Video,
+    Audio,
+}
+
+struct Sender {
+    kind: SenderKind,
+}
+
+impl Sender {
+    pub fn mute(&self) {
+
+    }
+}
