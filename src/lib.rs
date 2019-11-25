@@ -44,22 +44,23 @@ impl PromiseResolver {
 
 struct Room {
     peers: HashMap<PeerId, PeerConnection>,
-    on_mute: HashMap<MuteSubscriber, Vec<PromiseResolver>>,
     ws: WebSocket,
+    promise_repo: PromiseRepository,
 }
 
 impl Room {
     pub fn handle_event(&mut self, event: Event) {
+        self.promise_repo
+            .take_all_resolvers_for_event(&event)
+            .into_iter()
+            .for_each(|resolver| {
+                resolver.resolve();
+            });
+
         match event {
             Event::RoomMuted { video, audio } => {
-                let sub = MuteSubscriber { video, audio };
                 self.peers.iter_mut().for_each(|(id, peer)| {
                     peer.mute(video, audio);
-                });
-                self.on_mute.remove(&sub).map(|q| {
-                    q.into_iter().for_each(|resolver| {
-                        resolver.resolve();
-                    })
                 });
             }
         }
@@ -98,8 +99,8 @@ impl RoomHandle {
         console_error_panic_hook::set_once();
         let ws = WebSocket::new("ws://127.0.0.1:10000/ws");
         let room = Rc::new(RefCell::new(Room {
+            promise_repo: PromiseRepository::new(),
             peers: HashMap::new(),
-            on_mute: HashMap::new(),
             ws,
         }));
         let room_clone = room.clone();
@@ -111,22 +112,39 @@ impl RoomHandle {
 
     pub fn mute(&self, audio: bool, video: bool) -> Promise {
         let (resolver, promise) = PromiseResolver::new_promise();
-        let mute_subscriber = MuteSubscriber { audio, video };
         self.0
             .borrow_mut()
-            .on_mute
-            .entry(mute_subscriber)
+            .promise_repo
+            .insert_resolver(Event::RoomMuted { audio, video }, resolver);
+        self.0.borrow().ws.send(Command::MuteRoom { audio, video });
+
+        promise
+    }
+}
+
+struct PromiseRepository(Rc<RefCell<HashMap<Event, Vec<PromiseResolver>>>>);
+
+impl PromiseRepository {
+    pub fn new() -> Self {
+        Self(Rc::new(RefCell::new(HashMap::new())))
+    }
+
+    pub fn insert_resolver(&self, event: Event, resolver: PromiseResolver) {
+        self.0
+            .borrow_mut()
+            .entry(event)
             .or_insert_with(|| Vec::new())
             .push(resolver);
-        let self_clone = self.clone();
-        spawn_local(async move {
-            self_clone
-                .0
-                .borrow()
-                .ws
-                .send(Command::MuteRoom { audio, video });
-        });
-        promise
+    }
+
+    pub fn take_all_resolvers_for_event(
+        &self,
+        event: &Event,
+    ) -> Vec<PromiseResolver> {
+        self.0
+            .borrow_mut()
+            .remove(event)
+            .unwrap_or_else(|| Vec::new())
     }
 }
 
