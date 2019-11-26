@@ -7,42 +7,12 @@ use futures::channel::oneshot;
 use js_sys::{Function, Promise};
 use mute_unmute_poc_proto::{Command, Event};
 use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::{spawn_local, JsFuture};
+use wasm_bindgen_futures::{future_to_promise, spawn_local, JsFuture};
 
 use crate::ws::WebSocket;
 
 #[derive(Eq, PartialEq, Hash)]
 struct PeerId(pub i32);
-
-struct PromiseResolver {
-    resolve: Option<Function>,
-    reject: Option<Function>,
-}
-
-impl PromiseResolver {
-    pub fn new_promise() -> (Self, Promise) {
-        let mut promise_resolver = Self {
-            resolve: None,
-            reject: None,
-        };
-        let promise =
-            Promise::new(&mut |resolve: Function, reject: Function| {
-                promise_resolver.resolve = Some(resolve);
-                promise_resolver.reject = Some(reject);
-            });
-
-        (promise_resolver, promise)
-    }
-
-    pub fn resolve(self) {
-        self.resolve.unwrap().call0(&JsValue::NULL).unwrap();
-    }
-
-    #[allow(dead_code)]
-    pub fn reject(self) {
-        self.reject.unwrap().call0(&JsValue::NULL).unwrap();
-    }
-}
 
 struct Room {
     peers: HashMap<PeerId, PeerConnection>,
@@ -97,7 +67,6 @@ impl RoomHandle {
     }
 
     pub fn mute(&self, audio: bool, video: bool) -> Promise {
-        let (resolver, promise) = PromiseResolver::new_promise();
         let on_mute_fut: Vec<_> = self
             .0
             .borrow_mut()
@@ -106,13 +75,11 @@ impl RoomHandle {
             .map(|(_, peer)| peer.on_mute(audio, video))
             .collect();
 
-        spawn_local(async move {
-            futures::future::join_all(on_mute_fut).await;
-            resolver.resolve();
-        });
-
         self.0.borrow().ws.send(Command::MuteRoom { audio, video });
-        promise
+        future_to_promise(async move {
+            futures::future::join_all(on_mute_fut).await;
+            Ok(JsValue::NULL)
+        })
     }
 }
 
