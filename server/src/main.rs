@@ -1,3 +1,6 @@
+//! Simple WebSocket server which sends [`Event::RoomMuted`] 3 seconds after
+//! receives [`Command::MuteRoom`].
+
 use std::time::Duration;
 
 use actix::{Actor, AsyncContext, StreamHandler};

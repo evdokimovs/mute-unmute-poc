@@ -1,10 +1,29 @@
+//! Nothing interesting here. Just basic WebSocket implementation.
+
 use std::rc::Rc;
 
+use js_sys::Promise;
 use mute_unmute_poc_proto::{Command, Event};
-use wasm_bindgen_futures::spawn_local;
+use wasm_bindgen::JsValue;
+use wasm_bindgen_futures::{spawn_local, JsFuture};
 use web_sys::WebSocket as SysWebSocket;
 
-use crate::{event_listener::EventListener, resolve_after};
+use crate::event_listener::EventListener;
+
+/// Async function which resolves after provided number of milliseconds.
+pub async fn resolve_after(delay_ms: i32) -> Result<(), JsValue> {
+    JsFuture::from(Promise::new(&mut |yes, _| {
+        web_sys::window()
+            .unwrap()
+            .set_timeout_with_callback_and_timeout_and_arguments_0(
+                &yes, delay_ms,
+            )
+            .unwrap();
+    }))
+    .await?;
+
+    Ok(())
+}
 
 pub struct WebSocket {
     socket: Rc<SysWebSocket>,

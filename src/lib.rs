@@ -1,13 +1,15 @@
+//! Implementation for mute functional.
+
 mod event_listener;
 mod ws;
 
 use std::{cell::RefCell, collections::HashMap, future::Future, rc::Rc};
 
 use futures::channel::oneshot;
-use js_sys::{Function, Promise};
+use js_sys::Promise;
 use mute_unmute_poc_proto::{Command, Event};
 use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::{future_to_promise, spawn_local, JsFuture};
+use wasm_bindgen_futures::future_to_promise;
 
 use crate::ws::WebSocket;
 
@@ -31,21 +33,6 @@ impl Room {
     }
 }
 
-/// Async function which resolves after provided number of milliseconds.
-pub async fn resolve_after(delay_ms: i32) -> Result<(), JsValue> {
-    JsFuture::from(Promise::new(&mut |yes, _| {
-        web_sys::window()
-            .unwrap()
-            .set_timeout_with_callback_and_timeout_and_arguments_0(
-                &yes, delay_ms,
-            )
-            .unwrap();
-    }))
-    .await?;
-
-    Ok(())
-}
-
 #[wasm_bindgen]
 #[derive(Clone)]
 pub struct RoomHandle(Rc<RefCell<Room>>);
@@ -66,6 +53,9 @@ impl RoomHandle {
         Self(room)
     }
 
+    // TODO: Maybe add timeout for this `Promise`?
+    //       Also we can mute room without server's event if this promise is
+    //       timed out.
     pub fn mute(&self, audio: bool, video: bool) -> Promise {
         let on_mute_fut: Vec<_> = self
             .0

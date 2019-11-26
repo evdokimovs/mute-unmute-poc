@@ -1,3 +1,6 @@
+//! Nothing interesting here. Just `EventListener` copy-pasted from Jason (but
+//! with `unwrap`s).
+
 use std::{ops::Deref, rc::Rc};
 
 use wasm_bindgen::{closure::Closure, convert::FromWasmAbi, JsCast};
