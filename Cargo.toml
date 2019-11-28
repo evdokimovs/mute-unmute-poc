@@ -4,12 +4,6 @@ version = "0.1.0"
 authors = ["Semen Evdokimov <evdokimovs@protonmail.ch>"]
 edition = "2018"
 
-[workspace]
-members = [
-  "server",
-  "proto"
-]
-
 [lib]
 crate-type = ["cdylib", "rlib"]
 
@@ -22,7 +16,6 @@ serde_json = "1.0"
 wasm-bindgen = { version = "0.2", features = ["serde-serialize"] }
 wasm-bindgen-futures = "0.4"
 futures = "0.3"
-mute-unmute-poc-proto = { path = "proto" }
 console_error_panic_hook = "0.1"
 [dependencies.web-sys]
     version = "0.3"
