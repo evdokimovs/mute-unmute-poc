@@ -1,9 +1,29 @@
 <head>
   <meta http-equiv="Content-type" content="text/html; charset=utf-8" />
   <title>Mute/unmute POC</title>
+  <style>
+    .btns {
+      display: inline-flex;
+      margin-right: 10px;
+    }
+    .btns > button {
+      margin: 3px;
+      left: 50%;
+    }
+  </style>
 </head>
 
 <body>
-<button id="mute-video">Mute video</button>
-<button id="mute-audio">Mute audio</button>
+<div class="btns">
+  <button id="mute-video">Mute video</button><br>
+  <button id="unmute-video">Unmute video</button>
+</div>
+<div class="btns">
+  <button id="mute-audio">Mute audio</button><br>
+  <button id="unmute-audio">Unmute audio</button>
+</div>
+<div class="btns">
+  <button id="mute-all">Mute all</button><br>
+  <button id="unmute-all">Unmute all</button>
+</div>
 </body>

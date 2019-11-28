@@ -16,17 +16,20 @@ impl WebSocket {
 
     pub fn send(&self, cmd: Command) {
         web_sys::console::log_1(&"Received command.".into());
-        match cmd {
+        let event_to_send = match cmd {
             Command::MuteRoom { audio, video } => {
-                let on_message = self.on_message.clone();
-                spawn_local(async move {
-                    resolve_after(3000).await;
-                    on_message
-                        .as_ref()
-                        .map(move |f| (f)(Event::RoomMuted { audio, video }));
-                });
+                Event::RoomMuted { audio, video }
             }
-        }
+            Command::UnmuteRoom { audio, video } => {
+                Event::RoomUnmuted { audio, video }
+            }
+        };
+
+        let on_message = self.on_message.clone();
+        spawn_local(async move {
+            resolve_after(3000).await;
+            on_message.as_ref().map(move |f| (f)(event_to_send));
+        });
     }
 
     pub fn on_message<F>(&mut self, on_message: F)

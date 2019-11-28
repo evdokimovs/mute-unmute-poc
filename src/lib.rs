@@ -1,7 +1,7 @@
 //! Implementation for mute functional.
 
-mod ws;
 mod proto;
+mod ws;
 
 use std::{cell::RefCell, collections::HashMap, future::Future, rc::Rc};
 
@@ -16,13 +16,14 @@ use crate::ws::WebSocket;
 /// Resolves after provided number of milliseconds.
 pub async fn resolve_after(delay_ms: i32) -> Result<(), JsValue> {
     JsFuture::from(Promise::new(&mut |yes, _| {
-        web_sys::window().unwrap()
+        web_sys::window()
+            .unwrap()
             .set_timeout_with_callback_and_timeout_and_arguments_0(
                 &yes, delay_ms,
             )
             .unwrap();
     }))
-        .await?;
+    .await?;
     Ok(())
 }
 
@@ -42,7 +43,20 @@ impl Room {
                     peer.mute(*audio, *video);
                 });
             }
+            Event::RoomUnmuted { video, audio } => {
+                self.peers.iter_mut().for_each(|(_, peer)| {
+                    peer.unmute(*audio, *video);
+                })
+            }
         }
+    }
+
+    fn is_busy(&self, audio: bool, video: bool) -> bool {
+        self.peers
+            .values()
+            .filter(|peer| peer.is_busy(audio, video))
+            .count()
+            != 0
     }
 }
 
@@ -70,7 +84,7 @@ impl RoomHandle {
     //       Also we can mute room without server's event if this promise is
     //       timed out.
     pub fn mute(&self, audio: bool, video: bool) -> Promise {
-        let busy_count = self.0.borrow().peers.values().filter(|peer| peer.is_busy(audio, video)).count();
+        let is_room_busy = self.0.borrow().is_busy(audio, video);
         let on_mute_fut: Vec<_> = self
             .0
             .borrow_mut()
@@ -80,14 +94,34 @@ impl RoomHandle {
             .map(|(_, peer)| peer.on_mute(audio, video))
             .collect();
 
-        if busy_count == 0 && on_mute_fut.len() > 0 {
-            self.0
-                .borrow()
-                .ws
-                .send(Command::MuteRoom { audio, video });
+        if !is_room_busy && on_mute_fut.len() > 0 {
+            self.0.borrow().ws.send(Command::MuteRoom { audio, video });
         }
         future_to_promise(async move {
             futures::future::join_all(on_mute_fut).await;
+            Ok(JsValue::NULL)
+        })
+    }
+
+    pub fn unmute(&self, audio: bool, video: bool) -> Promise {
+        let is_room_busy = self.0.borrow().is_busy(audio, video);
+        let on_unmute_fut: Vec<_> = self
+            .0
+            .borrow_mut()
+            .peers
+            .iter_mut()
+            .filter(|(_, peer)| peer.is_muted(audio, video))
+            .map(|(_, peer)| peer.on_unmute(audio, video))
+            .collect();
+
+        if !is_room_busy && on_unmute_fut.len() > 0 {
+            self.0
+                .borrow()
+                .ws
+                .send(Command::UnmuteRoom { audio, video });
+        }
+        future_to_promise(async move {
+            futures::future::join_all(on_unmute_fut).await;
             Ok(JsValue::NULL)
         })
     }
@@ -121,13 +155,31 @@ impl PeerConnection {
     ) -> impl Iterator<Item = &mut Sender> {
         self.tracks.iter_mut().filter(move |sender| {
             (sender.kind == SenderKind::Audio && audio)
-                || (sender.kind == SenderKind::Video && video) && !sender.is_muted()
+                || (sender.kind == SenderKind::Video && video)
+        })
+    }
+
+    pub fn filter_tracks_by_kind(
+        &self,
+        audio: bool,
+        video: bool,
+    ) -> impl Iterator<Item = &Sender> {
+        self.tracks.iter().filter(move |sender| {
+            (sender.kind == SenderKind::Audio && audio)
+                || (sender.kind == SenderKind::Video && video)
         })
     }
 
     pub fn mute(&mut self, audio: bool, video: bool) {
         self.filter_tracks_by_kind_mut(audio, video)
+            .filter(|sender| !sender.is_muted())
             .for_each(Sender::mute);
+    }
+
+    pub fn unmute(&mut self, audio: bool, video: bool) {
+        self.filter_tracks_by_kind_mut(audio, video)
+            .filter(|sender| sender.is_muted())
+            .for_each(Sender::unmute);
     }
 
     pub fn on_mute(
@@ -137,24 +189,35 @@ impl PeerConnection {
     ) -> impl Future<Output = Vec<Result<(), oneshot::Canceled>>> {
         futures::future::join_all(
             self.filter_tracks_by_kind_mut(audio, video)
+                .filter(|sender| !sender.is_muted())
                 .map(Sender::on_mute),
         )
     }
 
+    pub fn on_unmute(
+        &mut self,
+        audio: bool,
+        video: bool,
+    ) -> impl Future<Output = Vec<Result<(), oneshot::Canceled>>> {
+        futures::future::join_all(
+            self.filter_tracks_by_kind_mut(audio, video)
+                .filter(|sender| sender.is_muted())
+                .map(Sender::on_unmute),
+        )
+    }
+
     pub fn is_busy(&self, audio: bool, video: bool) -> bool {
-        self.tracks.iter().filter(move |sender| {
-            ((sender.kind == SenderKind::Audio && audio)
-                || (sender.kind == SenderKind::Video && video)) && !sender.is_busy()
-        })
-            .count() == 0
+        self.filter_tracks_by_kind(audio, video)
+            .filter(|sender| !sender.is_busy())
+            .count()
+            == 0
     }
 
     pub fn is_muted(&self, audio: bool, video: bool) -> bool {
-        self.tracks.iter().filter(move |sender| {
-            ((sender.kind == SenderKind::Audio && audio)
-                || (sender.kind == SenderKind::Video && video)) && !sender.is_muted()
-        })
-            .count() == 0
+        self.filter_tracks_by_kind(audio, video)
+            .filter(|sender| !sender.is_muted())
+            .count()
+            == 0
     }
 }
 
@@ -168,6 +231,7 @@ enum SenderKind {
 struct Sender {
     kind: SenderKind,
     on_mute: Vec<oneshot::Sender<()>>,
+    on_unmute: Vec<oneshot::Sender<()>>,
     is_muted: bool,
 }
 
@@ -176,6 +240,7 @@ impl Sender {
         Self {
             kind,
             on_mute: Vec::new(),
+            on_unmute: Vec::new(),
             is_muted: false,
         }
     }
@@ -187,6 +252,13 @@ impl Sender {
             .for_each(|on_mute| on_mute.send(()).unwrap());
     }
 
+    pub fn unmute(&mut self) {
+        self.is_muted = false;
+        self.on_unmute
+            .drain(..)
+            .for_each(|on_unmute| on_unmute.send(()).unwrap());
+    }
+
     pub fn on_mute(
         &mut self,
     ) -> impl Future<Output = Result<(), oneshot::Canceled>> {
@@ -195,8 +267,16 @@ impl Sender {
         rx
     }
 
+    pub fn on_unmute(
+        &mut self,
+    ) -> impl Future<Output = Result<(), oneshot::Canceled>> {
+        let (tx, rx) = oneshot::channel();
+        self.on_unmute.push(tx);
+        rx
+    }
+
     pub fn is_busy(&self) -> bool {
-        self.on_mute.len() > 0
+        self.on_mute.len() > 0 || self.on_unmute.len() > 0
     }
 
     pub fn is_muted(&self) -> bool {
