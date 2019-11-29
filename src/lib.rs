@@ -5,13 +5,30 @@ pub mod ws;
 
 use std::{cell::RefCell, collections::HashMap, future::Future, rc::Rc};
 
-use futures::{channel::oneshot, StreamExt as _};
+use futures::{
+    channel::oneshot, future, future::Either, StreamExt as _, TryStreamExt,
+};
 use js_sys::Promise;
 use proto::{Command, Event};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{future_to_promise, spawn_local, JsFuture};
 
 use crate::ws::{RpcClient, WebSocket};
+
+const PROMISE_TIMEOUT: i32 = 4000;
+
+async fn future_with_timeout<F, O>(fut: F) -> Result<(), ()>
+where
+    F: Future<Output = O>,
+{
+    let res =
+        future::select(Box::pin(fut), Box::pin(resolve_after(PROMISE_TIMEOUT)))
+            .await;
+    match res {
+        Either::Left(_) => Ok(()),
+        Either::Right(_) => Err(()),
+    }
+}
 
 /// Resolves after provided number of milliseconds.
 pub async fn resolve_after(delay_ms: i32) -> Result<(), JsValue> {
@@ -80,7 +97,7 @@ impl RoomHandle {
         Self(room)
     }
 
-    pub async fn inner_mute(&self, audio: bool, video: bool) {
+    pub async fn inner_mute(&self, audio: bool, video: bool) -> Result<(), ()> {
         let is_room_busy = self.0.borrow().is_busy(audio, video);
         let on_mute_fut: Vec<_> = self
             .0
@@ -98,10 +115,14 @@ impl RoomHandle {
                 .send(Command::MuteRoom { audio, video });
         }
 
-        futures::future::join_all(on_mute_fut).await;
+        future_with_timeout(future::join_all(on_mute_fut)).await
     }
 
-    pub async fn inner_unmute(&self, audio: bool, video: bool) {
+    pub async fn inner_unmute(
+        &self,
+        audio: bool,
+        video: bool,
+    ) -> Result<(), ()> {
         let is_room_busy = self.0.borrow().is_busy(audio, video);
         let on_unmute_fut: Vec<_> = self
             .0
@@ -119,7 +140,7 @@ impl RoomHandle {
                 .send(Command::UnmuteRoom { audio, video });
         }
 
-        futures::future::join_all(on_unmute_fut).await;
+        future_with_timeout(future::join_all(on_unmute_fut)).await
     }
 }
 
@@ -136,16 +157,22 @@ impl RoomHandle {
     pub fn mute(&self, audio: bool, video: bool) -> Promise {
         let self_clone = self.clone();
         future_to_promise(async move {
-            self_clone.inner_mute(audio, video).await;
-            Ok(JsValue::NULL)
+            self_clone
+                .inner_mute(audio, video)
+                .await
+                .map(|_| JsValue::NULL)
+                .map_err(|_| JsValue::NULL)
         })
     }
 
     pub fn unmute(&self, audio: bool, video: bool) -> Promise {
         let self_clone = self.clone();
         future_to_promise(async move {
-            self_clone.inner_unmute(audio, video).await;
-            Ok(JsValue::NULL)
+            self_clone
+                .inner_unmute(audio, video)
+                .await
+                .map(|_| JsValue::NULL)
+                .map_err(|_| JsValue::NULL)
         })
     }
 }
