@@ -1,17 +1,17 @@
 //! Implementation for mute functional.
 
-mod proto;
-mod ws;
+pub mod proto;
+pub mod ws;
 
 use std::{cell::RefCell, collections::HashMap, future::Future, rc::Rc};
 
-use futures::channel::oneshot;
+use futures::{channel::oneshot, StreamExt as _};
 use js_sys::Promise;
 use proto::{Command, Event};
 use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::{future_to_promise, JsFuture};
+use wasm_bindgen_futures::{future_to_promise, spawn_local, JsFuture};
 
-use crate::ws::WebSocket;
+use crate::ws::{RpcClient, WebSocket};
 
 /// Resolves after provided number of milliseconds.
 pub async fn resolve_after(delay_ms: i32) -> Result<(), JsValue> {
@@ -32,7 +32,7 @@ struct PeerId(pub i32);
 
 struct Room {
     peers: HashMap<PeerId, PeerConnection>,
-    ws: WebSocket,
+    ws: Box<dyn RpcClient>,
 }
 
 impl Room {
@@ -64,26 +64,23 @@ impl Room {
 #[derive(Clone)]
 pub struct RoomHandle(Rc<RefCell<Room>>);
 
-#[wasm_bindgen]
 impl RoomHandle {
-    #[wasm_bindgen(constructor)]
-    pub fn new() -> Self {
+    pub fn new_with_client(ws: Box<dyn RpcClient>) -> Self {
         console_error_panic_hook::set_once();
-        let ws = WebSocket::new();
         let mut peers = HashMap::new();
         peers.insert(PeerId(100), PeerConnection::new());
         let room = Rc::new(RefCell::new(Room { peers, ws }));
         let room_clone = room.clone();
-        room.borrow_mut().ws.on_message(move |event| {
-            room_clone.borrow_mut().handle_event(&event);
+        let mut fut = room.borrow_mut().ws.on_message();
+        spawn_local(async move {
+            while let Some(event) = fut.next().await {
+                room_clone.borrow_mut().handle_event(&event);
+            }
         });
         Self(room)
     }
 
-    // TODO: Maybe add timeout for this `Promise`?
-    //       Also we can mute room without server's event if this promise is
-    //       timed out.
-    pub fn mute(&self, audio: bool, video: bool) -> Promise {
+    pub async fn inner_mute(&self, audio: bool, video: bool) {
         let is_room_busy = self.0.borrow().is_busy(audio, video);
         let on_mute_fut: Vec<_> = self
             .0
@@ -95,15 +92,16 @@ impl RoomHandle {
             .collect();
 
         if !is_room_busy && on_mute_fut.len() > 0 {
-            self.0.borrow().ws.send(Command::MuteRoom { audio, video });
+            self.0
+                .borrow_mut()
+                .ws
+                .send(Command::MuteRoom { audio, video });
         }
-        future_to_promise(async move {
-            futures::future::join_all(on_mute_fut).await;
-            Ok(JsValue::NULL)
-        })
+
+        futures::future::join_all(on_mute_fut).await;
     }
 
-    pub fn unmute(&self, audio: bool, video: bool) -> Promise {
+    pub async fn inner_unmute(&self, audio: bool, video: bool) {
         let is_room_busy = self.0.borrow().is_busy(audio, video);
         let on_unmute_fut: Vec<_> = self
             .0
@@ -120,8 +118,33 @@ impl RoomHandle {
                 .ws
                 .send(Command::UnmuteRoom { audio, video });
         }
+
+        futures::future::join_all(on_unmute_fut).await;
+    }
+}
+
+#[wasm_bindgen]
+impl RoomHandle {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        Self::new_with_client(Box::new(WebSocket::new()))
+    }
+
+    // TODO: Maybe add timeout for this `Promise`?
+    //       Also we can mute room without server's event if this promise is
+    //       timed out.
+    pub fn mute(&self, audio: bool, video: bool) -> Promise {
+        let self_clone = self.clone();
         future_to_promise(async move {
-            futures::future::join_all(on_unmute_fut).await;
+            self_clone.inner_mute(audio, video).await;
+            Ok(JsValue::NULL)
+        })
+    }
+
+    pub fn unmute(&self, audio: bool, video: bool) -> Promise {
+        let self_clone = self.clone();
+        future_to_promise(async move {
+            self_clone.inner_unmute(audio, video).await;
             Ok(JsValue::NULL)
         })
     }

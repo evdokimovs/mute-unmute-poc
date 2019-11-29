@@ -17,6 +17,7 @@ wasm-bindgen = { version = "0.2", features = ["serde-serialize"] }
 wasm-bindgen-futures = "0.4"
 futures = "0.3"
 console_error_panic_hook = "0.1"
+mockall = "0.5"
 [dependencies.web-sys]
     version = "0.3"
     features = [
@@ -25,3 +26,6 @@ console_error_panic_hook = "0.1"
         "MessageEvent",
         "WebSocket", "Window",
     ]
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
