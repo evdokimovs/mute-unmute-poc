@@ -102,10 +102,23 @@ impl<T, S, O> ReactiveField<T, S, O>
 where
     S: OnReactiveFieldModification<T>,
 {
-    pub fn borrow_mut(&mut self) -> MutReactiveField<'_, T, S> {
-        MutReactiveField {
+    pub fn unsafe_borrow_mut(&mut self) -> UnsafeMutReactiveField<'_, T, S> {
+        UnsafeMutReactiveField {
             data: &mut self.data,
-            is_modified: false,
+            subs: &self.subs,
+        }
+    }
+}
+
+impl<T, S, O> ReactiveField<T, S, O>
+where
+    S: OnReactiveFieldModification<T>,
+    T: Clone + Eq,
+{
+    pub fn borrow_mut(&mut self) -> SafeMutReactiveField<'_, T, S> {
+        SafeMutReactiveField {
+            value_before_mutation: self.data.clone(),
+            data: &mut self.data,
             subs: &self.subs,
         }
     }
@@ -146,16 +159,15 @@ impl<T, S, O> Deref for ReactiveField<T, S, O> {
     }
 }
 
-pub struct MutReactiveField<'a, T, S>
+pub struct UnsafeMutReactiveField<'a, T, S>
 where
     S: OnReactiveFieldModification<T>,
 {
     data: &'a mut T,
-    is_modified: bool,
     subs: &'a S,
 }
 
-impl<'a, T, S> Deref for MutReactiveField<'a, T, S>
+impl<'a, T, S> Deref for UnsafeMutReactiveField<'a, T, S>
 where
     S: OnReactiveFieldModification<T>,
 {
@@ -166,24 +178,63 @@ where
     }
 }
 
-// TODO: impl Deref with real modification detection when specialization feature
-//       will be in stable Rust. https://github.com/rust-lang/rust/issues/31844
-impl<'a, T, S> DerefMut for MutReactiveField<'a, T, S>
+impl<'a, T, S> DerefMut for UnsafeMutReactiveField<'a, T, S>
 where
     S: OnReactiveFieldModification<T>,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.is_modified = true;
         &mut self.data
     }
 }
 
-impl<'a, T, S> Drop for MutReactiveField<'a, T, S>
+impl<'a, T, S> Drop for UnsafeMutReactiveField<'a, T, S>
 where
     S: OnReactiveFieldModification<T>,
 {
     fn drop(&mut self) {
-        if self.is_modified {
+        self.subs.on_modify(&self.data);
+    }
+}
+
+pub struct SafeMutReactiveField<'a, T, S>
+where
+    S: OnReactiveFieldModification<T>,
+    T: Eq,
+{
+    data: &'a mut T,
+    subs: &'a S,
+    value_before_mutation: T,
+}
+
+impl<'a, T, S> Deref for SafeMutReactiveField<'a, T, S>
+where
+    S: OnReactiveFieldModification<T>,
+    T: Eq,
+{
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl<'a, T, S> DerefMut for SafeMutReactiveField<'a, T, S>
+where
+    S: OnReactiveFieldModification<T>,
+    T: Eq,
+{
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.data
+    }
+}
+
+impl<'a, T, S> Drop for SafeMutReactiveField<'a, T, S>
+where
+    S: OnReactiveFieldModification<T>,
+    T: Eq,
+{
+    fn drop(&mut self) {
+        if self.data != &self.value_before_mutation {
             self.subs.on_modify(&self.data);
         }
     }
@@ -241,7 +292,7 @@ mod test {
     async fn mut_borrow() {
         let mut foo = ReactiveField::new(Foo::new());
         let mut stream = foo.subscribe();
-        foo.borrow_mut().bump();
+        foo.unsafe_borrow_mut().bump();
         // panic!("{:?}", stream.next().await.unwrap())
     }
 
@@ -250,7 +301,7 @@ mod test {
         let mut bar: CustomReactiveField<Bar, u32> =
             ReactiveField::new_with_custom(Bar::new(), Vec::new());
         let mut stream = bar.subscribe();
-        bar.borrow_mut().bump();
+        bar.unsafe_borrow_mut().bump();
         panic!("{}", stream.next().await.unwrap())
     }
 
