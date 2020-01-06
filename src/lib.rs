@@ -3,13 +3,22 @@
 pub mod proto;
 pub mod ws;
 
-use std::{cell::RefCell, collections::HashMap, future::Future, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    future::Future,
+    rc::Rc,
+};
 
 use futures::{
-    channel::oneshot, future, future::Either, StreamExt as _, TryStreamExt,
+    channel::oneshot,
+    future,
+    future::{Either, LocalBoxFuture},
+    StreamExt as _,
 };
 use js_sys::Promise;
 use proto::{Command, Event};
+use reactivity::DefaultReactiveField;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{future_to_promise, spawn_local, JsFuture};
 
@@ -236,24 +245,24 @@ impl PeerConnection {
         &mut self,
         audio: bool,
         video: bool,
-    ) -> impl Future<Output = Vec<Result<(), oneshot::Canceled>>> {
-        futures::future::join_all(
+    ) -> impl Future<Output = Vec<Result<(), ()>>> {
+        Box::pin(futures::future::join_all(
             self.filter_tracks_by_kind_mut(audio, video)
                 .filter(|sender| !sender.is_muted())
                 .map(Sender::on_mute),
-        )
+        ))
     }
 
     pub fn on_unmute(
         &mut self,
         audio: bool,
         video: bool,
-    ) -> impl Future<Output = Vec<Result<(), oneshot::Canceled>>> {
-        futures::future::join_all(
+    ) -> impl Future<Output = Vec<Result<(), ()>>> {
+        Box::pin(futures::future::join_all(
             self.filter_tracks_by_kind_mut(audio, video)
                 .filter(|sender| sender.is_muted())
                 .map(Sender::on_unmute),
-        )
+        ))
     }
 
     pub fn is_busy(&self, audio: bool, video: bool) -> bool {
@@ -280,56 +289,40 @@ enum SenderKind {
 #[derive(Debug)]
 struct Sender {
     kind: SenderKind,
-    on_mute: Vec<oneshot::Sender<()>>,
-    on_unmute: Vec<oneshot::Sender<()>>,
-    is_muted: bool,
+    is_muted: DefaultReactiveField<bool>,
+    is_busy: Rc<Cell<bool>>,
 }
 
 impl Sender {
     pub fn new(kind: SenderKind) -> Self {
         Self {
             kind,
-            on_mute: Vec::new(),
-            on_unmute: Vec::new(),
-            is_muted: false,
+            is_muted: DefaultReactiveField::new(false),
+            is_busy: Rc::new(Cell::new(false)),
         }
     }
 
     pub fn mute(&mut self) {
-        self.is_muted = true;
-        self.on_mute
-            .drain(..)
-            .for_each(|on_mute| on_mute.send(()).unwrap());
+        *self.is_muted.borrow_mut() = true;
     }
 
     pub fn unmute(&mut self) {
-        self.is_muted = false;
-        self.on_unmute
-            .drain(..)
-            .for_each(|on_unmute| on_unmute.send(()).unwrap());
+        *self.is_muted.borrow_mut() = false;
     }
 
-    pub fn on_mute(
-        &mut self,
-    ) -> impl Future<Output = Result<(), oneshot::Canceled>> {
-        let (tx, rx) = oneshot::channel();
-        self.on_mute.push(tx);
-        rx
+    pub fn on_mute(&mut self) -> impl Future<Output = Result<(), ()>> {
+        self.is_muted.when_will(|is_muted| is_muted)
     }
 
-    pub fn on_unmute(
-        &mut self,
-    ) -> impl Future<Output = Result<(), oneshot::Canceled>> {
-        let (tx, rx) = oneshot::channel();
-        self.on_unmute.push(tx);
-        rx
+    pub fn on_unmute(&mut self) -> impl Future<Output = Result<(), ()>> {
+        self.is_muted.when_will(|is_muted| !is_muted)
     }
 
     pub fn is_busy(&self) -> bool {
-        self.on_mute.len() > 0 || self.on_unmute.len() > 0
+        self.is_busy.get()
     }
 
     pub fn is_muted(&self) -> bool {
-        self.is_muted
+        *self.is_muted
     }
 }
