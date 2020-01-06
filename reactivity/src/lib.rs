@@ -1,9 +1,9 @@
 use std::{
     fmt,
+    fmt::{Debug, Error, Formatter},
     marker::PhantomData,
     ops::{Deref, DerefMut},
 };
-use std::fmt::{Debug, Error, Formatter};
 
 use futures::{
     channel::mpsc, future::LocalBoxFuture, stream::LocalBoxStream,
@@ -66,7 +66,7 @@ where
         self.subs.subscribe()
     }
 
-    pub fn when_will<F>(
+    pub fn when<F>(
         &mut self,
         resolver: F,
     ) -> LocalBoxFuture<'static, Result<(), ()>>
@@ -82,6 +82,19 @@ where
             }
             Err(())
         })
+    }
+}
+
+impl<T, S, O> ReactiveField<T, S, O>
+where
+    O: Eq + 'static,
+    S: Subscribable<O>,
+{
+    pub fn when_eq(
+        &mut self,
+        should_be: O,
+    ) -> LocalBoxFuture<'static, Result<(), ()>> {
+        self.when(move |data| data == should_be)
     }
 }
 
@@ -140,7 +153,6 @@ where
     data: &'a mut T,
     is_modified: bool,
     subs: &'a S,
-    value_before_mutation: Option<T>,
 }
 
 impl<'a, T, S> Deref for MutReactiveField<'a, T, S>
@@ -154,6 +166,8 @@ where
     }
 }
 
+// TODO: impl Deref with real modification detection when specialization feature
+//       will be in stable Rust. https://github.com/rust-lang/rust/issues/31844
 impl<'a, T, S> DerefMut for MutReactiveField<'a, T, S>
 where
     S: OnReactiveFieldModification<T>,

@@ -311,11 +311,11 @@ impl Sender {
     }
 
     pub fn on_mute(&mut self) -> impl Future<Output = Result<(), ()>> {
-        self.is_muted.when_will(|is_muted| is_muted)
+        self.is_muted.when_eq(true)
     }
 
     pub fn on_unmute(&mut self) -> impl Future<Output = Result<(), ()>> {
-        self.is_muted.when_will(|is_muted| !is_muted)
+        self.is_muted.when_eq(false)
     }
 
     pub fn is_busy(&self) -> bool {
