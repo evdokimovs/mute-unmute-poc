@@ -311,25 +311,23 @@ impl Sender {
     }
 
     pub fn on_mute(&mut self) -> impl Future<Output = Result<(), ()>> {
-        let when_eq = self.is_muted.when_eq(true);
+        self.busy();
+        self.is_muted.when_eq(true)
+    }
+
+    fn busy(&mut self) {
         let is_busy = self.is_busy.clone();
-        async move {
+        let wait_for_change = self.is_muted.when(|_| true);
+        spawn_local(async move {
             is_busy.set(true);
-            when_eq.await?;
+            wait_for_change.await;
             is_busy.set(false);
-            Ok(())
-        }
+        });
     }
 
     pub fn on_unmute(&mut self) -> impl Future<Output = Result<(), ()>> {
-        let when_eq = self.is_muted.when_eq(false);
-        let is_busy = self.is_busy.clone();
-        async move {
-            is_busy.set(true);
-            when_eq.await?;
-            is_busy.set(false);
-            Ok(())
-        }
+        self.busy();
+        self.is_muted.when_eq(false)
     }
 
     pub fn is_busy(&self) -> bool {
