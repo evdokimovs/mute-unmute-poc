@@ -101,18 +101,6 @@ where
 impl<T, S, O> ReactiveField<T, S, O>
 where
     S: OnReactiveFieldModification<T>,
-{
-    pub fn unsafe_borrow_mut(&mut self) -> UnsafeMutReactiveField<'_, T, S> {
-        UnsafeMutReactiveField {
-            data: &mut self.data,
-            subs: &self.subs,
-        }
-    }
-}
-
-impl<T, S, O> ReactiveField<T, S, O>
-where
-    S: OnReactiveFieldModification<T>,
     T: Clone + Eq,
 {
     pub fn borrow_mut(&mut self) -> SafeMutReactiveField<'_, T, S> {
@@ -156,43 +144,6 @@ impl<T, S, O> Deref for ReactiveField<T, S, O> {
 
     fn deref(&self) -> &Self::Target {
         &self.data
-    }
-}
-
-pub struct UnsafeMutReactiveField<'a, T, S>
-where
-    S: OnReactiveFieldModification<T>,
-{
-    data: &'a mut T,
-    subs: &'a S,
-}
-
-impl<'a, T, S> Deref for UnsafeMutReactiveField<'a, T, S>
-where
-    S: OnReactiveFieldModification<T>,
-{
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
-
-impl<'a, T, S> DerefMut for UnsafeMutReactiveField<'a, T, S>
-where
-    S: OnReactiveFieldModification<T>,
-{
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.data
-    }
-}
-
-impl<'a, T, S> Drop for UnsafeMutReactiveField<'a, T, S>
-where
-    S: OnReactiveFieldModification<T>,
-{
-    fn drop(&mut self) {
-        self.subs.on_modify(&self.data);
     }
 }
 
