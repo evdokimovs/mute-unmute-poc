@@ -134,7 +134,7 @@ pub trait Subscribable<T: 'static> {
 }
 
 pub struct SubscriberOnChange<T> {
-    pub sender: oneshot::Sender<()>,
+    pub sender: Option<oneshot::Sender<()>>,
     pub assert_fn: Box<dyn Fn(&T) -> bool>,
 }
 
@@ -152,7 +152,7 @@ impl<T: 'static> SubscribableOnce<T> for Vec<SubscriberOnChange<T>> {
     ) -> LocalBoxFuture<'static, ()> {
         let (tx, rx) = oneshot::channel();
         self.push(SubscriberOnChange {
-            sender: tx,
+            sender: Some(tx),
             assert_fn,
         });
 
@@ -168,17 +168,27 @@ where
     T: Clone + PartialEq,
 {
     fn on_modify(&mut self, data: &T) {
-        *self = self
-            .drain(..)
-            .filter_map(move |mut sub| {
-                if (sub.assert_fn)(data) {
-                    sub.sender.send(());
-                    None
-                } else {
-                    Some(sub)
-                }
-            })
-            .collect();
+        // This code can be used on stable Rust, but it much slower than code with 'drain_filter'.
+//        *self = self
+//            .drain(..)
+//            .filter_map(move |mut sub| {
+//                if (sub.assert_fn)(data) {
+//                    sub.sender.send(());
+//                    None
+//                } else {
+//                    Some(sub)
+//                }
+//            })
+//            .collect();
+
+        self.drain_filter(|sub| {
+            if (sub.assert_fn)(data) {
+                sub.sender.take().unwrap().send(());
+                true
+            } else {
+                false
+            }
+        });
     }
 }
 
@@ -364,7 +374,7 @@ mod test {
     use super::*;
     use crate::alexlapa_reactivity::ObservableField;
 
-    const MUTATE_COUNT: i32 = 10000;
+    const MUTATE_COUNT: i32 = 100000;
 
     #[bench]
     fn this_primitive(b: &mut Bencher) {
