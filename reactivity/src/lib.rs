@@ -1,3 +1,6 @@
+#![feature(test)]
+#![feature(drain_filter)]
+
 use std::{
     fmt,
     fmt::{Debug, Error, Formatter},
@@ -191,88 +194,147 @@ where
     }
 }
 
-#[cfg(test)]
-mod test {
-    use futures::StreamExt;
+mod alexlapa_reactivity {
 
-    use super::*;
+    use futures::{
+        channel::{mpsc, oneshot},
+        executor,
+        future::{FutureExt, LocalBoxFuture, TryFutureExt},
+        stream::LocalBoxStream,
+    };
+    use std::cell::RefCell;
+    use tokio::prelude::*;
 
-    #[derive(Clone, Debug)]
-    struct Foo {
-        bar: u32,
+    pub struct Dropped;
+
+    enum AssertType<T: PartialEq> {
+        Predicate(Box<dyn Fn(&T) -> bool>),
+        Val(T),
     }
 
-    impl Foo {
-        pub fn new() -> Self {
-            Self { bar: 0 }
-        }
-
-        pub fn bump(&mut self) {
-            self.bar += 1;
-        }
-
-        pub fn get_count(&self) -> u32 {
-            self.bar
-        }
-    }
-
-    struct Bar {
-        bar: u32,
-    }
-
-    impl Bar {
-        pub fn new() -> Self {
-            Self { bar: 0 }
-        }
-
-        pub fn bump(&mut self) {
-            self.bar += 1;
-        }
-    }
-
-    impl OnReactiveFieldModification<Bar> for DefaultSubscribable<u32> {
-        fn on_modify(&self, data: &Bar) {
-            let bar = data.bar;
-            self.iter()
-                .filter(|sub| !sub.is_closed())
-                .for_each(|sub| sub.unbounded_send(bar).unwrap());
-        }
-    }
-
-    #[tokio::test]
-    async fn mut_borrow() {
-        let mut foo = ReactiveField::new(Foo::new());
-        let mut stream = foo.subscribe();
-        foo.unsafe_borrow_mut().bump();
-        // panic!("{:?}", stream.next().await.unwrap())
-    }
-
-    #[tokio::test]
-    async fn bar() {
-        let mut bar: CustomReactiveField<Bar, u32> =
-            ReactiveField::new_with_custom(Bar::new(), Vec::new());
-        let mut stream = bar.subscribe();
-        bar.unsafe_borrow_mut().bump();
-        panic!("{}", stream.next().await.unwrap())
-    }
-
-    struct DifferentFields {
-        custom_output_field: CustomReactiveField<Bar, u32>,
-        same_out_field: DefaultReactiveField<Foo>,
-    }
-
-    impl DifferentFields {
-        pub fn new() -> Self {
-            Self {
-                custom_output_field: ReactiveField::new_with_custom(
-                    Bar::new(),
-                    Vec::new(),
-                ),
-                same_out_field: ReactiveField::new(Foo::new()),
+    impl<T: PartialEq> PartialEq<T> for AssertType<T> {
+        fn eq(&self, other: &T) -> bool {
+            match &self {
+                Self::Predicate(predicate) => predicate(other),
+                Self::Val(val) => val == other,
             }
         }
     }
 
-    #[tokio::test]
-    async fn different_fields() {}
+    enum Subscriber<T: PartialEq> {
+        Flux(AssertType<T>, mpsc::Sender<()>),
+        Mono(AssertType<T>, Option<oneshot::Sender<()>>),
+    }
+
+    pub struct ObservableField<T: PartialEq> {
+        pub data: T,
+        subs: RefCell<Vec<Subscriber<T>>>,
+    }
+
+    impl<T: PartialEq> ObservableField<T> {
+        pub fn new(inner: T) -> Self {
+            Self {
+                data: inner,
+                subs: RefCell::new(vec![]),
+            }
+        }
+
+        fn when_eq(&self, val: T) -> LocalBoxStream<'static, ()> {
+            unimplemented!()
+        }
+
+        fn when(
+            &self,
+            f: Box<dyn Fn(&T) -> bool>,
+        ) -> LocalBoxStream<'static, ()> {
+            unimplemented!()
+        }
+
+        pub fn once_when_eq(
+            &self,
+            val: T,
+        ) -> LocalBoxFuture<'static, Result<(), Dropped>> {
+            let (tx, rx) = oneshot::channel();
+            self.subs
+                .borrow_mut()
+                .push(Subscriber::Mono(AssertType::Val(val), Some(tx)));
+            rx.map_err(|_| Dropped).boxed()
+        }
+
+        pub fn set(&mut self, val: T) {
+            self.data = val;
+
+            let mut subs = self.subs.borrow_mut();
+
+            subs.drain_filter(|sub| match sub {
+                Subscriber::Flux(ref assert, sender) => {
+                    if !sender.is_closed() {
+                        if assert == &self.data {
+                            let _ = sender.try_send(());
+                        }
+                        false
+                    } else {
+                        true
+                    }
+                }
+                Subscriber::Mono(ref assert, sender) => {
+                    if assert == &self.data {
+                        let sender = sender.take().expect("MEh");
+                        if !sender.is_canceled() {
+                            if assert == &self.data {
+                                let _ = sender.send(());
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            true
+                        }
+                    } else {
+                        true
+                    }
+                }
+            });
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    extern crate test as std_test;
+
+    use futures::StreamExt;
+    use std_test::Bencher;
+
+    use super::*;
+    use crate::alexlapa_reactivity::ObservableField;
+
+    #[bench]
+    fn this_primitive(b: &mut Bencher) {
+        b.iter(|| {
+            futures::executor::block_on(async {
+                let mut x = DefaultReactiveField::new(1i32);
+                let wait_for_1001 = x.when_eq(1001);
+                for _ in 0..1000 {
+                    *x.borrow_mut() += 1;
+                }
+                wait_for_1001.await;
+            });
+        });
+    }
+
+    #[bench]
+    fn alexlapa_primitive(b: &mut Bencher) {
+        b.iter(|| {
+            futures::executor::block_on(async {
+                let mut x = ObservableField::new(1i32);
+                let wait_for_1001 = x.once_when_eq(1001);
+                for _ in 0..1000 {
+                    let qq = x.data + 1;
+                    x.set(qq);
+                }
+                wait_for_1001.await;
+            })
+        })
+    }
 }
