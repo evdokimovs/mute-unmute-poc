@@ -18,7 +18,7 @@ use futures::{
 };
 use js_sys::Promise;
 use proto::{Command, Event};
-use reactivity::DefaultReactiveField;
+use reactivity::{Dropped, OnceAndManyReactiveField, OnceReactiveField};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{future_to_promise, spawn_local, JsFuture};
 
@@ -245,7 +245,7 @@ impl PeerConnection {
         &mut self,
         audio: bool,
         video: bool,
-    ) -> impl Future<Output = Vec<Result<(), ()>>> {
+    ) -> impl Future<Output = Vec<Result<(), Dropped>>> {
         Box::pin(futures::future::join_all(
             self.filter_tracks_by_kind_mut(audio, video)
                 .filter(|sender| !sender.is_muted())
@@ -257,7 +257,7 @@ impl PeerConnection {
         &mut self,
         audio: bool,
         video: bool,
-    ) -> impl Future<Output = Vec<Result<(), ()>>> {
+    ) -> impl Future<Output = Vec<Result<(), Dropped>>> {
         Box::pin(futures::future::join_all(
             self.filter_tracks_by_kind_mut(audio, video)
                 .filter(|sender| sender.is_muted())
@@ -289,7 +289,7 @@ enum SenderKind {
 #[derive(Debug)]
 struct Sender {
     kind: SenderKind,
-    is_muted: DefaultReactiveField<bool>,
+    is_muted: OnceAndManyReactiveField<bool>,
     is_busy: Rc<Cell<bool>>,
 }
 
@@ -297,7 +297,7 @@ impl Sender {
     pub fn new(kind: SenderKind) -> Self {
         Self {
             kind,
-            is_muted: DefaultReactiveField::new(false),
+            is_muted: OnceAndManyReactiveField::new(false),
             is_busy: Rc::new(Cell::new(false)),
         }
     }
@@ -310,7 +310,7 @@ impl Sender {
         *self.is_muted.borrow_mut() = false;
     }
 
-    pub fn on_mute(&mut self) -> impl Future<Output = Result<(), ()>> {
+    pub fn on_mute(&mut self) -> impl Future<Output = Result<(), Dropped>> {
         self.busy();
         self.is_muted.when_eq(true)
     }
@@ -325,7 +325,7 @@ impl Sender {
         });
     }
 
-    pub fn on_unmute(&mut self) -> impl Future<Output = Result<(), ()>> {
+    pub fn on_unmute(&mut self) -> impl Future<Output = Result<(), Dropped>> {
         self.busy();
         self.is_muted.when_eq(false)
     }
