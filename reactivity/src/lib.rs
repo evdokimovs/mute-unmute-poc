@@ -17,16 +17,40 @@ use futures::{
 };
 
 pub type DefaultSubscribable<T> = Vec<mpsc::UnboundedSender<T>>;
+
+/// [`ReactiveField`] with which you can only subscribe on changes [`Stream`].
 pub type DefaultReactiveField<T> = ReactiveField<T, DefaultSubscribable<T>, T>;
+
+/// [`ReactiveField`] with custom subscriber.
 pub type CustomReactiveField<T, O> =
     ReactiveField<T, DefaultSubscribable<O>, O>;
-pub type OnceReactiveField<T> = ReactiveField<T, Vec<SubscriberOnChange<T>>, T>;
+
+/// [`ReactiveField`] with which you can only subscribe on concrete change with
+/// [`ReactiveField::when`] and [`ReactiveField::when_eq`].
+pub type OnceReactiveField<T> = ReactiveField<T, Vec<SubscriberOnce<T>>, T>;
+
+/// [`ReactiveField`] to which you can subscribe on all changes and only on
+/// concrete change (with [`ReactiveField::when`] or
+/// [`ReactiveField::when_eq`]).
 pub type OnceAndManyReactiveField<T> =
     ReactiveField<T, Vec<UniversalSubscriber<T>>, T>;
 
+/// A reactive cell which will emit all modification to the subscribers.
+///
+/// You can subscribe to this field modifications with
+/// [`ReactiveField::subscribe`].
+///
+/// If you want to get [`Future`] which will be resolved only when data of this
+/// field will become equal to some data, you can use [`ReactiveField::when`] or
+/// [`ReactiveField::when_eq`].
 pub struct ReactiveField<T, S, O> {
+    /// Data which stored by this [`ReactiveField`].
     data: T,
+
+    /// Subscribers on [`ReactiveField`]'s data mutations.
     subs: S,
+
+    /// Output of [`ReactiveField::subscribe`] [`Stream`].
     _subscribable_output: PhantomData<O>,
 }
 
@@ -43,6 +67,8 @@ impl<T> ReactiveField<T, Vec<mpsc::UnboundedSender<T>>, T>
 where
     T: 'static,
 {
+    /// Returns new [`ReactiveField`] on which modification you can only
+    /// [`ReactiveField::subscribe`].
     pub fn new(data: T) -> Self {
         Self {
             data,
@@ -52,10 +78,13 @@ where
     }
 }
 
-impl<T> ReactiveField<T, Vec<SubscriberOnChange<T>>, T>
+impl<T> ReactiveField<T, Vec<SubscriberOnce<T>>, T>
 where
     T: 'static,
 {
+    /// Returns new [`ReactiveField`] on which mutations you can't
+    /// [`ReactiveField::subscribe`], but you can subscribe on concrete
+    /// mutation with [`ReactiveField::when`] and [`ReactiveField::when_eq`].
     pub fn new(data: T) -> Self {
         Self {
             data,
@@ -69,6 +98,9 @@ impl<T> ReactiveField<T, Vec<UniversalSubscriber<T>>, T>
 where
     T: 'static,
 {
+    /// Returns new [`ReactiveField`] on which mutations you can
+    /// [`ReactiveSubscribe`], also you can subscribe on concrete mutation with
+    /// [`ReactiveField::when`] and [`ReactiveField::when_eq`].
     pub fn new(data: T) -> Self {
         Self {
             data,
@@ -83,6 +115,8 @@ where
     O: 'static,
     S: Subscribable<O>,
 {
+    /// Creates new [`ReactiveField`] with custom [`Subscribable`]
+    /// implementation.
     pub fn new_with_custom(data: T, subs: S) -> Self {
         Self {
             data,
@@ -98,6 +132,8 @@ where
     O: 'static,
     S: SubscribableOnce<T>,
 {
+    /// Returns [`Future`] which will be resolved only on modification with
+    /// which your `assert_fn` returned `true`.
     pub fn when<F>(
         &mut self,
         assert_fn: F,
@@ -125,6 +161,8 @@ where
     O: 'static,
     S: SubscribableOnce<T>,
 {
+    /// Returns [`Future`] which will be resolved only when data of this
+    /// [`ReactiveField`] will become equal to provided `should_be`.
     pub fn when_eq(
         &mut self,
         should_be: T,
@@ -138,8 +176,19 @@ where
     S: OnReactiveFieldModification<T>,
     T: Clone + Eq,
 {
-    pub fn borrow_mut(&mut self) -> SafeMutReactiveField<'_, T, S> {
-        SafeMutReactiveField {
+    /// Returns [`MutReactiveFieldGuard`] which can be mutably dereferenced to
+    /// underlying data.
+    ///
+    /// If some mutation of data happened between calling
+    /// [`ReactiveField::borrow_mut`] and dropping of
+    /// [`MutReactiveFieldGuard`], then all subscribers of this
+    /// [`ReactiveField`] will be notified about this.
+    ///
+    /// Notification about mutation will be sent only if this field __really__
+    /// changed. This will be checked with [`PartialEq`] implementation of
+    /// underlying data.
+    pub fn borrow_mut(&mut self) -> MutReactiveFieldGuard<'_, T, S> {
+        MutReactiveFieldGuard {
             value_before_mutation: self.data.clone(),
             data: &mut self.data,
             subs: &mut self.subs,
@@ -148,13 +197,25 @@ where
 }
 
 pub trait OnReactiveFieldModification<T> {
+    /// This function will be called on every [`ReactiveField`] modification.
+    ///
+    /// On this function call subsciber which implements
+    /// [`OnReactiveFieldModification`] should send a update to a [`Stream`]
+    /// or resolve [`Future`].
     fn on_modify(&mut self, data: &T);
 }
 
 pub trait Subscribable<T: 'static> {
+    /// This function will be called on [`ReactiveField::subscribe`].
+    ///
+    /// Should return [`LocalBoxStream`] to which will be sent data updates.
     fn subscribe(&mut self) -> LocalBoxStream<'static, T>;
 }
 
+/// Subscriber which implements [`Subscribable`] and [`SubscribableOnce`] in
+/// [`Vec`].
+///
+/// This structure should be wrapped into [`Vec`].
 pub enum UniversalSubscriber<T> {
     When {
         sender: Option<oneshot::Sender<()>>,
@@ -163,11 +224,16 @@ pub enum UniversalSubscriber<T> {
     All(mpsc::UnboundedSender<T>),
 }
 
-pub struct SubscriberOnChange<T> {
+/// Subscriber which implements only [`SubscribableOnce`].
+///
+/// This structure should be wrapped into [`Vec`].
+pub struct SubscriberOnce<T> {
     pub sender: Option<oneshot::Sender<()>>,
     pub assert_fn: Box<dyn Fn(&T) -> bool>,
 }
 
+/// Error will be sent to all subscribers when this [`ReactiveField`] is
+/// dropped.
 #[derive(Debug)]
 pub struct Dropped;
 
@@ -178,6 +244,10 @@ impl From<oneshot::Canceled> for Dropped {
 }
 
 pub trait SubscribableOnce<T: 'static> {
+    /// This function will be called on [`ReactiveField::when`].
+    ///
+    /// Should return [`LocalBoxFuture`] to which will be sent `()` when
+    /// provided `assert_fn` returns `true`.
     fn subscribe_once(
         &mut self,
         assert_fn: Box<dyn Fn(&T) -> bool>,
@@ -227,13 +297,13 @@ impl<T: Clone> OnReactiveFieldModification<T> for Vec<UniversalSubscriber<T>> {
     }
 }
 
-impl<T: 'static> SubscribableOnce<T> for Vec<SubscriberOnChange<T>> {
+impl<T: 'static> SubscribableOnce<T> for Vec<SubscriberOnce<T>> {
     fn subscribe_once(
         &mut self,
         assert_fn: Box<dyn Fn(&T) -> bool>,
     ) -> LocalBoxFuture<'static, Result<(), Dropped>> {
         let (tx, rx) = oneshot::channel();
-        self.push(SubscriberOnChange {
+        self.push(SubscriberOnce {
             sender: Some(tx),
             assert_fn,
         });
@@ -242,13 +312,15 @@ impl<T: 'static> SubscribableOnce<T> for Vec<SubscriberOnChange<T>> {
     }
 }
 
-impl<T> OnReactiveFieldModification<T> for Vec<SubscriberOnChange<T>>
+impl<T> OnReactiveFieldModification<T> for Vec<SubscriberOnce<T>>
 where
     T: Clone,
 {
     fn on_modify(&mut self, data: &T) {
         // This code can be used on stable Rust, but it much slower than code
-        // with 'drain_filter'.        *self = self
+        // with 'drain_filter'.
+        //
+        // *self = self
         //            .drain(..)
         //            .filter_map(move |mut sub| {
         //                if (sub.assert_fn)(data) {
@@ -299,7 +371,7 @@ impl<T, S, O> Deref for ReactiveField<T, S, O> {
     }
 }
 
-pub struct SafeMutReactiveField<'a, T, S>
+pub struct MutReactiveFieldGuard<'a, T, S>
 where
     S: OnReactiveFieldModification<T>,
     T: Eq,
@@ -309,7 +381,7 @@ where
     value_before_mutation: T,
 }
 
-impl<'a, T, S> Deref for SafeMutReactiveField<'a, T, S>
+impl<'a, T, S> Deref for MutReactiveFieldGuard<'a, T, S>
 where
     S: OnReactiveFieldModification<T>,
     T: Eq,
@@ -321,7 +393,7 @@ where
     }
 }
 
-impl<'a, T, S> DerefMut for SafeMutReactiveField<'a, T, S>
+impl<'a, T, S> DerefMut for MutReactiveFieldGuard<'a, T, S>
 where
     S: OnReactiveFieldModification<T>,
     T: Eq,
@@ -331,7 +403,7 @@ where
     }
 }
 
-impl<'a, T, S> Drop for SafeMutReactiveField<'a, T, S>
+impl<'a, T, S> Drop for MutReactiveFieldGuard<'a, T, S>
 where
     S: OnReactiveFieldModification<T>,
     T: Eq,
@@ -343,117 +415,18 @@ where
     }
 }
 
-mod alexlapa_reactivity {
-
-    use futures::{
-        channel::{mpsc, oneshot},
-        executor,
-        future::{FutureExt, LocalBoxFuture, TryFutureExt},
-        stream::LocalBoxStream,
-    };
-    use std::cell::RefCell;
-    use tokio::prelude::*;
-
-    #[derive(Debug)]
-    pub struct Dropped;
-
-    enum AssertType<T: PartialEq> {
-        Predicate(Box<dyn Fn(&T) -> bool>),
-        Val(T),
-    }
-
-    impl<T: PartialEq> PartialEq<T> for AssertType<T> {
-        fn eq(&self, other: &T) -> bool {
-            match &self {
-                Self::Predicate(predicate) => predicate(other),
-                Self::Val(val) => val == other,
-            }
-        }
-    }
-
-    enum Subscriber<T: PartialEq> {
-        Flux(AssertType<T>, mpsc::Sender<()>),
-        Mono(AssertType<T>, Option<oneshot::Sender<()>>),
-    }
-
-    pub struct ObservableField<T: PartialEq> {
-        pub data: T,
-        subs: RefCell<Vec<Subscriber<T>>>,
-    }
-
-    impl<T: PartialEq> ObservableField<T> {
-        pub fn new(inner: T) -> Self {
-            Self {
-                data: inner,
-                subs: RefCell::new(vec![]),
-            }
-        }
-
-        fn when_eq(&self, val: T) -> LocalBoxStream<'static, ()> {
-            unimplemented!()
-        }
-
-        fn when(
-            &self,
-            f: Box<dyn Fn(&T) -> bool>,
-        ) -> LocalBoxStream<'static, ()> {
-            unimplemented!()
-        }
-
-        pub fn once_when_eq(
-            &self,
-            val: T,
-        ) -> LocalBoxFuture<'static, Result<(), Dropped>> {
-            let (tx, rx) = oneshot::channel();
-            self.subs
-                .borrow_mut()
-                .push(Subscriber::Mono(AssertType::Val(val), Some(tx)));
-            rx.map_err(|_| Dropped).boxed()
-        }
-
-        pub fn set(&mut self, val: T) {
-            self.data = val;
-
-            let mut subs = self.subs.borrow_mut();
-
-            subs.drain_filter(|sub| match sub {
-                Subscriber::Flux(ref assert, sender) => {
-                    if !sender.is_closed() {
-                        if assert == &self.data {
-                            let _ = sender.try_send(());
-                        }
-                        false
-                    } else {
-                        true
-                    }
-                }
-                Subscriber::Mono(ref assert, sender) => {
-                    if assert == &self.data {
-                        let sender = sender.take().expect("MEh");
-                        if !sender.is_canceled() {
-                            let _ = sender.send(());
-                        }
-                        true
-                    } else {
-                        false
-                    }
-                }
-            });
-        }
-    }
-}
-
 #[cfg(test)]
 mod test {
     extern crate test as std_test;
 
-    use futures::StreamExt;
+    use futures::{StreamExt, TryFutureExt};
     use std_test::Bencher;
 
     use super::*;
-    use crate::alexlapa_reactivity::ObservableField;
+    //    use crate::alexlapa_reactivity::ObservableField;
+    use futures_signals::signal::SignalExt;
 
-    const MUTATE_COUNT: i32 = 1_000_000;
+    const MUTATE_COUNT: i32 = 10_000;
 
     #[bench]
     fn this_primitive(b: &mut Bencher) {
@@ -469,17 +442,41 @@ mod test {
         });
     }
 
+    // #[bench]
+    // fn alexlapa_primitive(b: &mut Bencher) {
+    // b.iter(|| {
+    // futures::executor::block_on(async {
+    // let mut x = ObservableField::new(1i32);
+    // let wait_for_1001 = x.once_when_eq(MUTATE_COUNT);
+    // for _ in 0..MUTATE_COUNT {
+    // let qq = x.data + 1;
+    // x.set(qq);
+    // }
+    // wait_for_1001.await.expect("Nope");
+    // })
+    // })
+    // }
+
     #[bench]
-    fn alexlapa_primitive(b: &mut Bencher) {
+    fn futures_signals(b: &mut Bencher) {
+        use futures_signals::signal::Mutable;
+
         b.iter(|| {
             futures::executor::block_on(async {
-                let mut x = ObservableField::new(1i32);
-                let wait_for_1001 = x.once_when_eq(MUTATE_COUNT);
+                let mut x = Mutable::new(1i32);
+                let mut signal = x.signal().to_stream();
+                let wait_for_1001 = async move {
+                    while let Some(update) = signal.next().await {
+                        if update > MUTATE_COUNT {
+                            break;
+                        }
+                    }
+                };
+
                 for _ in 0..MUTATE_COUNT {
-                    let qq = x.data + 1;
-                    x.set(qq);
+                    *x.lock_mut() += 1;
                 }
-                wait_for_1001.await.expect("Nope");
+                wait_for_1001.await;
             })
         })
     }
