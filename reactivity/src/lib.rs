@@ -1,5 +1,4 @@
 #![feature(test)]
-#![feature(drain_filter)]
 
 use std::{
     fmt,
@@ -9,12 +8,9 @@ use std::{
     pin::Pin,
 };
 
-use futures::{
-    channel::{mpsc, oneshot},
-    future::LocalBoxFuture,
-    stream::LocalBoxStream,
-    Future, Stream, StreamExt as _,
-};
+use futures::{channel::{mpsc, oneshot}, future::LocalBoxFuture, stream::LocalBoxStream, Future, Stream, StreamExt as _, future};
+use std::cell::RefCell;
+use futures::future::Either;
 
 pub type DefaultSubscribable<T> = Vec<mpsc::UnboundedSender<T>>;
 
@@ -141,7 +137,11 @@ where
     where
         F: Fn(&T) -> bool + 'static,
     {
-        self.subs.subscribe_once(Box::new(assert_fn))
+        if (assert_fn)(&self.data) {
+            Box::pin(future::ok(()))
+        } else {
+            self.subs.subscribe_once(Box::new(assert_fn))
+        }
     }
 }
 
@@ -218,7 +218,7 @@ pub trait Subscribable<T: 'static> {
 /// This structure should be wrapped into [`Vec`].
 pub enum UniversalSubscriber<T> {
     When {
-        sender: Option<oneshot::Sender<()>>,
+        sender: RefCell<Option<oneshot::Sender<()>>>,
         assert_fn: Box<dyn Fn(&T) -> bool>,
     },
     All(mpsc::UnboundedSender<T>),
@@ -228,7 +228,7 @@ pub enum UniversalSubscriber<T> {
 ///
 /// This structure should be wrapped into [`Vec`].
 pub struct SubscriberOnce<T> {
-    pub sender: Option<oneshot::Sender<()>>,
+    pub sender: RefCell<Option<oneshot::Sender<()>>>,
     pub assert_fn: Box<dyn Fn(&T) -> bool>,
 }
 
@@ -261,7 +261,7 @@ impl<T: 'static> SubscribableOnce<T> for Vec<UniversalSubscriber<T>> {
     ) -> LocalBoxFuture<'static, Result<(), Dropped>> {
         let (tx, rx) = oneshot::channel();
         self.push(UniversalSubscriber::When {
-            sender: Some(tx),
+            sender: RefCell::new(Some(tx)),
             assert_fn,
         });
 
@@ -280,10 +280,10 @@ impl<T: 'static> Subscribable<T> for Vec<UniversalSubscriber<T>> {
 
 impl<T: Clone> OnReactiveFieldModification<T> for Vec<UniversalSubscriber<T>> {
     fn on_modify(&mut self, data: &T) {
-        self.drain_filter(|sub| match sub {
+        self.retain(|sub| match sub {
             UniversalSubscriber::When { assert_fn, sender } => {
                 if (assert_fn)(data) {
-                    sender.take().unwrap().send(());
+                    sender.borrow_mut().take().unwrap().send(());
                     true
                 } else {
                     false
@@ -304,7 +304,7 @@ impl<T: 'static> SubscribableOnce<T> for Vec<SubscriberOnce<T>> {
     ) -> LocalBoxFuture<'static, Result<(), Dropped>> {
         let (tx, rx) = oneshot::channel();
         self.push(SubscriberOnce {
-            sender: Some(tx),
+            sender: RefCell::new(Some(tx)),
             assert_fn,
         });
 
@@ -317,24 +317,9 @@ where
     T: Clone,
 {
     fn on_modify(&mut self, data: &T) {
-        // This code can be used on stable Rust, but it much slower than code
-        // with 'drain_filter'.
-        //
-        // *self = self
-        //            .drain(..)
-        //            .filter_map(move |mut sub| {
-        //                if (sub.assert_fn)(data) {
-        //                    sub.sender.send(());
-        //                    None
-        //                } else {
-        //                    Some(sub)
-        //                }
-        //            })
-        //            .collect();
-
-        self.drain_filter(|sub| {
+        self.retain(|sub| {
             if (sub.assert_fn)(data) {
-                sub.sender.take().unwrap().send(());
+                sub.sender.borrow_mut().take().unwrap().send(());
                 true
             } else {
                 false
@@ -458,7 +443,7 @@ mod test {
     // }
 
     #[bench]
-    fn futures_signals(b: &mut Bencher) {
+    fn futures_signals_primitive(b: &mut Bencher) {
         use futures_signals::signal::Mutable;
 
         b.iter(|| {
